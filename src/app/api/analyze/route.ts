@@ -43,8 +43,9 @@ ${emailText}
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
-                responseMimeType: "application/json",
-                responseSchema: schema,
+                generationConfig: { 
+                    responseMimeType: "application/json",
+                    responseSchema: schema,
             }
         });
 
