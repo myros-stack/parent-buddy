@@ -43,12 +43,13 @@ ${emailText}
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
+                // All response configuration MUST be inside generationConfig
                 generationConfig: { 
                     responseMimeType: "application/json",
                     responseSchema: schema,
                 },
-            }
-        });
+            } // <--- Ensure this object closes correctly here
+        }); // <--- The generateContent function closes here
 
         // Parse and return the structured JSON data
         return NextResponse.json(JSON.parse(result.text)); 
