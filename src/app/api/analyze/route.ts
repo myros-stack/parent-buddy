@@ -46,6 +46,7 @@ ${emailText}
                 generationConfig: { 
                     responseMimeType: "application/json",
                     responseSchema: schema,
+                },
             }
         });
 
