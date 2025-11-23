@@ -40,16 +40,17 @@ EMAIL TEXT:
 ${emailText}
 ---`;
         
+
         const result = await model.generateContent({
+            // 1. Contents go first
             contents: [{ role: "user", parts: [{ text: prompt }] }],
-            config: {
-                // All response configuration MUST be inside generationConfig
-                generationConfig: { 
-                    responseMimeType: "application/json",
-                    responseSchema: schema,
-                },
-            } // <--- Ensure this object closes correctly here
-        }); // <--- The generateContent function closes here
+            
+            // 2. The generation/response config properties go DIRECTLY here
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            // You may optionally add other generation properties here, like temperature: 0.0,
+        });
+// ... rest of the code// <--- The generateContent function closes here
 
         // Parse and return the structured JSON data
         return NextResponse.json(JSON.parse(result.text)); 
