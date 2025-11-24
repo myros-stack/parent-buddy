@@ -5,7 +5,7 @@ import { cookies } from 'next/headers'
 import { createServerClient } from '@supabase/ssr'
 
 /**
- * Initialize Supabase Server Client with proper cookie handling
+ * Initialize Supabase Server Client with proper async cookie handling
  */
 async function getSupabaseClient() {
   const cookieStore = await cookies()
@@ -67,13 +67,12 @@ export async function POST() {
     }
 
     // Create new profile for this user
+    // NOTE: Only insert id and allowed_sources - don't include email or created_at
     const { data: newProfile, error: insertError } = await supabase
       .from('profiles')
       .insert({
         id: user.id,
-        email: user.email,
         allowed_sources: '',
-        created_at: new Date().toISOString(),
       })
       .select()
       .single()

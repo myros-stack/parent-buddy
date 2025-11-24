@@ -1,23 +1,23 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-// --- Initialize Supabase Client (Must be process.env for deployment) ---
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { createClient } from '@/lib/supabase/client';
 
 export default function Home() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState('');
+  const [classifiedItems, setClassifiedItems] = useState<any[]>([]);
   const [allowedSources, setAllowedSources] = useState('');
+  const [filterHistory, setFilterHistory] = useState<any[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
+  const [editingFilterId, setEditingFilterId] = useState<string | null>(null);
+  const [editingFilterValue, setEditingFilterValue] = useState('');
 
-  // --- Auth Listener ---
+  const supabase = createClient();
+
+  // Auth Listener
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }: { data: { user: any } }) => {
       setUser(user);
@@ -32,9 +32,9 @@ export default function Home() {
     return () => {
       authListener?.subscription.unsubscribe();
     };
-  }, []);
+  }, [supabase]);
 
-  // --- Settings Logic ---
+  // Load settings
   const loadSettings = useCallback(async () => {
     if (!user) return;
 
@@ -42,16 +42,20 @@ export default function Home() {
       const res = await fetch('/api/settings');
       const data = await res.json();
 
-      if (res.ok && data.allowedSources) {
-        setAllowedSources(data.allowedSources);
-      } else if (!res.ok) {
-        console.warn('Failed to load settings:', data.error);
+      if (res.ok) {
+        if (data.allowedSources) {
+          setAllowedSources(data.allowedSources);
+        }
+        if (data.filterHistory && data.filterHistory.length > 0) {
+          setFilterHistory(data.filterHistory);
+        }
       }
     } catch (e) {
       console.error('Failed to load settings:', e);
     }
   }, [user]);
 
+  // Save settings
   const handleSaveSettings = async () => {
     setSaveStatus('saving');
     setSaveError('');
@@ -68,45 +72,106 @@ export default function Home() {
       if (res.ok) {
         setSaveStatus('saved');
         setSaveError('');
-        // Auto-dismiss success message after 3 seconds
+        setAllowedSources('');
         setTimeout(() => setSaveStatus('idle'), 3000);
+        loadSettings();
       } else {
         setSaveStatus('error');
         setSaveError(data.error || 'Failed to save filters.');
-        console.error('Save settings error:', data);
       }
     } catch (e) {
       setSaveStatus('error');
-      setSaveError(
-        e instanceof Error ? e.message : 'An unexpected error occurred.'
-      );
-      console.error('Save settings exception:', e);
+      setSaveError(e instanceof Error ? e.message : 'An unexpected error occurred.');
     }
   };
 
+  // Edit filter
+  const handleEditFilter = (filterId: string, filterValue: string) => {
+    setEditingFilterId(filterId);
+    setEditingFilterValue(filterValue);
+  };
+
+  // Save edit
+  const handleSaveEdit = async (filterId: string) => {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowedSources: editingFilterValue }),
+      });
+
+      if (res.ok) {
+        setEditingFilterId(null);
+        setEditingFilterValue('');
+        loadSettings();
+      }
+    } catch (e) {
+      console.error('Failed to save edit:', e);
+    }
+  };
+
+  // Delete filter
+  const handleDeleteFilter = async (filterId: string) => {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filterId }),
+      });
+
+      if (res.ok) {
+        loadSettings();
+      }
+    } catch (e) {
+      console.error('Failed to delete filter:', e);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingFilterId(null);
+    setEditingFilterValue('');
+  };
+
+  // Initialize profile
   useEffect(() => {
     if (user) {
-      // Initialize user profile on first login
       fetch('/api/init-profile', { method: 'POST' })
         .then((res) => res.json())
-        .then((data) => {
-          console.log('Profile initialized:', data);
-          // Then load settings
+        .then(() => {
           loadSettings();
         })
         .catch((e) => console.error('Failed to initialize profile:', e));
     }
   }, [user, loadSettings]);
 
-  // --- The Core Three-Step Analysis Workflow ---
+  // Get sources for analysis
+  const getSourcesForAnalysis = (): string => {
+    if (allowedSources.trim()) {
+      return allowedSources;
+    }
+    if (filterHistory.length > 0) {
+      return filterHistory[0].filters;
+    }
+    return '';
+  };
+
+  // Main analysis workflow
   const handleAnalyze = async () => {
+    const sourcesToUse = getSourcesForAnalysis();
+
+    if (!sourcesToUse) {
+      setResult('Please add a filter first.');
+      return;
+    }
+
     setLoading(true);
     setResult('');
+    setClassifiedItems([]);
 
     try {
       // STEP 1: Fetch Emails
       const emailRes = await fetch(
-        `/api/emails?sources=${encodeURIComponent(allowedSources)}`
+        `/api/emails?sources=${encodeURIComponent(sourcesToUse)}`
       );
       const emailData = await emailRes.json();
 
@@ -117,13 +182,13 @@ export default function Home() {
       }
       if (emailData.emails.length === 0) {
         setResult(
-          `No emails found matching the sources: ${allowedSources}. Please check your filters.`
+          `No emails found matching the sources: ${sourcesToUse}. Please check your filters.`
         );
         setLoading(false);
         return;
       }
 
-      // STEP 2: Analyze Emails (Returns JSON {summary, events} from /api/analyze)
+      // STEP 2: Analyze Emails
       const analyzeRes = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -137,18 +202,20 @@ export default function Home() {
         return;
       }
 
-      // STEP 3: Schedule Calendar Events (NEW STEP!)
+      setClassifiedItems(analyzedData.classifiedItems || []);
+
+      // STEP 3: Schedule Calendar Events
       const calendarRes = await fetch('/api/calendar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           events: analyzedData.events,
           summary: analyzedData.summary,
+          classifiedItems: analyzedData.classifiedItems,
         }),
       });
       const calendarData = await calendarRes.json();
 
-      // Final Result Display
       let finalMessage = analyzedData.summary || 'Analysis complete.';
 
       if (calendarData.scheduledCount > 0) {
@@ -160,9 +227,7 @@ export default function Home() {
       setResult(finalMessage);
     } catch (e) {
       setResult(
-        `An unexpected error occurred: ${
-          e instanceof Error ? e.message : String(e)
-        }`
+        `An unexpected error occurred: ${e instanceof Error ? e.message : String(e)}`
       );
     } finally {
       setLoading(false);
@@ -170,7 +235,6 @@ export default function Home() {
   };
 
   if (!user) {
-    // --- SIGN-IN UI ---
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 p-4">
         <h1 className="text-3xl font-bold mb-4 text-blue-700">Parent Buddy</h1>
@@ -182,12 +246,11 @@ export default function Home() {
             supabase.auth.signInWithOAuth({
               provider: 'google',
               options: {
-                // CRITICAL: Request both Gmail and Calendar access
                 scopes: [
                   'email',
                   'openid',
                   'https://www.googleapis.com/auth/gmail.readonly',
-                  'https://www.googleapis.com/auth/calendar.events', // Required for scheduling
+                  'https://www.googleapis.com/auth/calendar.events',
                 ],
               },
             })
@@ -200,7 +263,6 @@ export default function Home() {
     );
   }
 
-  // --- MAIN APP UI ---
   return (
     <main className="min-h-screen bg-gray-100 p-8 sm:p-12">
       <header className="flex justify-between items-center mb-8 pb-4 border-b border-gray-300">
@@ -222,12 +284,13 @@ export default function Home() {
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Left Panel: Filters & Analysis */}
         <div className="bg-white p-6 shadow-xl rounded-xl">
-          <h2 className="text-xl font-semibold mb-4 text-blue-700 flex items-center">
+          <h2 className="text-xl font-semibold mb-4 text-blue-700">
             1. Configure Filters & Analyze
           </h2>
 
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
             Allowed Sender Domains/Emails (comma-separated):
           </label>
           <div className="flex space-x-2 mb-4">
@@ -244,9 +307,9 @@ export default function Home() {
             />
             <button
               onClick={handleSaveSettings}
-              disabled={saveStatus === 'saving'}
+              disabled={saveStatus === 'saving' || allowedSources.length === 0}
               className={`px-4 py-3 rounded-lg text-white font-medium transition duration-150 ${
-                saveStatus === 'saving'
+                saveStatus === 'saving' || allowedSources.length === 0
                   ? 'bg-gray-400 cursor-not-allowed'
                   : 'bg-violet-600 hover:bg-violet-700'
               }`}
@@ -256,21 +319,71 @@ export default function Home() {
           </div>
 
           {saveStatus === 'saved' && (
-            <p className="text-sm text-green-600 mb-4">
-              ✅ Filters saved successfully!
-            </p>
+            <p className="text-sm text-green-600 mb-4">✅ Filters saved successfully!</p>
           )}
           {saveStatus === 'error' && (
-            <p className="text-sm text-red-600 mb-4">
-              ❌ {saveError || 'Failed to save filters.'}
-            </p>
+            <p className="text-sm text-red-600 mb-4">❌ {saveError}</p>
+          )}
+
+          {/* Saved Filters List */}
+          {filterHistory.length > 0 && (
+            <div className="mb-6">
+              <div className="space-y-2">
+                {filterHistory.map((filter) => (
+                  <div key={filter.id} className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200 group hover:bg-gray-100 transition">
+                    {editingFilterId === filter.id ? (
+                      <div className="flex-1 flex space-x-2">
+                        <input
+                          type="text"
+                          className="flex-1 p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-violet-600"
+                          value={editingFilterValue}
+                          onChange={(e) => setEditingFilterValue(e.target.value)}
+                        />
+                        <button
+                          onClick={() => handleSaveEdit(filter.id)}
+                          className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded transition"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={handleCancelEdit}
+                          className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm rounded transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="text-sm text-gray-800">{filter.filters}</span>
+                        <div className="flex space-x-3 opacity-0 group-hover:opacity-100 transition">
+                          <button
+                            onClick={() => handleEditFilter(filter.id, filter.filters)}
+                            className="text-blue-500 hover:text-blue-700 hover:scale-110 transition"
+                            title="Edit filter"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            onClick={() => handleDeleteFilter(filter.id)}
+                            className="text-red-500 hover:text-red-700 hover:scale-110 transition"
+                            title="Delete filter"
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
           <button
             onClick={handleAnalyze}
-            disabled={loading || allowedSources.length === 0}
-            className={`w-full py-3 mt-4 rounded-lg text-white font-semibold transition duration-150 ${
-              loading || allowedSources.length === 0
+            disabled={loading || (allowedSources.length === 0 && filterHistory.length === 0)}
+            className={`w-full py-3 rounded-lg text-white font-semibold transition duration-150 ${
+              loading || (allowedSources.length === 0 && filterHistory.length === 0)
                 ? 'bg-gray-400 cursor-not-allowed'
                 : 'bg-blue-600 hover:bg-blue-700 shadow-md'
             }`}
@@ -279,21 +392,66 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Right Panel: Results & Classified Items */}
         <div className="bg-white p-6 shadow-xl rounded-xl">
           <h2 className="text-xl font-semibold mb-4 text-blue-700">
             2. Extracted Items & Calendar Status
           </h2>
-          <div className="min-h-[200px] border border-gray-300 rounded-lg p-4 bg-gray-50 whitespace-pre-wrap">
+          <div className="space-y-4 max-h-[600px] overflow-y-auto">
             {loading ? (
-              <p className="text-gray-500">
-                Processing, analyzing, and scheduling items...
-              </p>
+              <p className="text-gray-500">Processing, analyzing, and scheduling items...</p>
             ) : result ? (
-              <p className="text-gray-800">{result}</p>
+              <div>
+                <p className="text-gray-800 mb-6 whitespace-pre-wrap">{result}</p>
+
+                {classifiedItems.length > 0 && (
+                  <div className="space-y-4 border-t pt-6">
+                    <h3 className="font-semibold text-gray-700 mb-4">📋 Classified Items:</h3>
+                    {classifiedItems.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="border-l-4 p-4 bg-gray-50 rounded"
+                        style={{ borderColor: item.color }}
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <h4 className="font-semibold text-gray-800">{item.title}</h4>
+                          <span
+                            className="px-2 py-1 text-xs rounded text-white"
+                            style={{ backgroundColor: item.color }}
+                          >
+                            {item.group}
+                          </span>
+                        </div>
+
+                        <p className="text-sm text-gray-700 mb-2">{item.description}</p>
+
+                        <div className="text-xs text-gray-600 space-y-1">
+                          {item.date && (
+                            <div>
+                              📅 <strong>Date:</strong> {item.date}
+                              {item.time && ` at ${item.time}`}
+                            </div>
+                          )}
+                          {item.location && (
+                            <div>📍 <strong>Location:</strong> {item.location}</div>
+                          )}
+                          {item.peopleInvolved && item.peopleInvolved.length > 0 && (
+                            <div>👥 <strong>People:</strong> {item.peopleInvolved.join(', ')}</div>
+                          )}
+                          {item.actionsRequired && item.actionsRequired.length > 0 && (
+                            <div>✓ <strong>Actions:</strong> {item.actionsRequired.join(', ')}</div>
+                          )}
+                          {item.reminder && (
+                            <div>🔔 <strong>Reminder:</strong> {item.reminder}</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : (
-              <p className="text-gray-500">
-                Results and scheduling status will appear here...
-              </p>
+              <p className="text-gray-500">Results and scheduling status will appear here...</p>
             )}
           </div>
         </div>
