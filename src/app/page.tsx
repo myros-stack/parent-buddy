@@ -246,6 +246,7 @@ export default function Home() {
             supabase.auth.signInWithOAuth({
               provider: 'google',
               options: {
+                redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/` : 'https://www.myros.ai/',
                 scopes: 'email openid https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events',
               },
             })
