@@ -246,12 +246,7 @@ export default function Home() {
             supabase.auth.signInWithOAuth({
               provider: 'google',
               options: {
-                scopes: [
-                  'email',
-                  'openid',
-                  'https://www.googleapis.com/auth/gmail.readonly',
-                  'https://www.googleapis.com/auth/calendar.events',
-                ],
+                scopes: 'email openid https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events',
               },
             })
           }
