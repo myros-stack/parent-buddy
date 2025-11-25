@@ -8,21 +8,26 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState('');
   const [classifiedItems, setClassifiedItems] = useState<any[]>([]);
-  const [allowedSources, setAllowedSources] = useState('');
-  const [filterHistory, setFilterHistory] = useState<any[]>([]);
+  // State for the filter currently being typed in the input box
+  const [allowedSources, setAllowedSources] = useState(''); 
+  // State for the filters loaded from the database
+  const [filterHistory, setFilterHistory] = useState<any[]>([]); 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [editingFilterId, setEditingFilterId] = useState<string | null>(null);
   const [editingFilterValue, setEditingFilterValue] = useState('');
 
+  // --- Supabase Initialization ---
   const supabase = createClient();
 
-  // Auth Listener
+  // --- Auth Listener ---
   useEffect(() => {
+    // Initial user check
     supabase.auth.getUser().then(({ data: { user } }: { data: { user: any } }) => {
       setUser(user);
     });
 
+    // Listener for state changes (login/logout)
     const { data: authListener } = supabase.auth.onAuthStateChange(
       (event: string, session: any) => {
         setUser(session?.user ?? null);
@@ -34,6 +39,8 @@ export default function Home() {
     };
   }, [supabase]);
 
+  // --- Settings & History Logic ---
+
   // Load settings
   const loadSettings = useCallback(async () => {
     if (!user) return;
@@ -43,11 +50,16 @@ export default function Home() {
       const data = await res.json();
 
       if (res.ok) {
-        if (data.allowedSources) {
-          setAllowedSources(data.allowedSources);
-        }
+        // The API should ideally return the current filter list (filterHistory)
         if (data.filterHistory && data.filterHistory.length > 0) {
           setFilterHistory(data.filterHistory);
+        } else if (data.allowedSources) {
+          // Fallback or legacy: if the API returns a single allowedSources string
+          // We can set it as the current input field value for convenience
+          setAllowedSources(data.allowedSources);
+        } else {
+            // Clear current input if nothing is loaded
+            setAllowedSources('');
         }
       }
     } catch (e) {
@@ -55,16 +67,20 @@ export default function Home() {
     }
   }, [user]);
 
-  // Save settings
+  // Save settings (Saves the NEW filter from the input field)
   const handleSaveSettings = async () => {
+    // Prevent saving empty or whitespace-only filters
+    if (!allowedSources.trim()) return; 
+
     setSaveStatus('saving');
     setSaveError('');
 
     try {
+      // POST request to create a new entry/filter
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allowedSources }),
+        body: JSON.stringify({ allowedSources: allowedSources.trim() }), // Use the input state
       });
 
       const data = await res.json();
@@ -72,9 +88,10 @@ export default function Home() {
       if (res.ok) {
         setSaveStatus('saved');
         setSaveError('');
-        setAllowedSources('');
+        // IMPORTANT: Clear the input field after successful save
+        setAllowedSources(''); 
         setTimeout(() => setSaveStatus('idle'), 3000);
-        loadSettings();
+        loadSettings(); // Reload history to show the new item
       } else {
         setSaveStatus('error');
         setSaveError(data.error || 'Failed to save filters.');
@@ -91,19 +108,25 @@ export default function Home() {
     setEditingFilterValue(filterValue);
   };
 
-  // Save edit
+  // Save edit (PUT request to update an existing filter)
   const handleSaveEdit = async (filterId: string) => {
+    if (!editingFilterValue.trim()) return;
+
     try {
+      // Assuming your /api/settings route handles a PUT or POST for edits
       const res = await fetch('/api/settings', {
-        method: 'POST',
+        method: 'PUT', // Use PUT if your API is configured for it, otherwise POST
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allowedSources: editingFilterValue }),
+        body: JSON.stringify({ filterId, newFilterValue: editingFilterValue.trim() }),
       });
 
       if (res.ok) {
         setEditingFilterId(null);
         setEditingFilterValue('');
-        loadSettings();
+        loadSettings(); // Reload history
+      } else {
+          // Handle error case for save edit
+          console.error('Failed to save edit:', await res.json());
       }
     } catch (e) {
       console.error('Failed to save edit:', e);
@@ -120,7 +143,7 @@ export default function Home() {
       });
 
       if (res.ok) {
-        loadSettings();
+        loadSettings(); // Reload history
       }
     } catch (e) {
       console.error('Failed to delete filter:', e);
@@ -132,7 +155,7 @@ export default function Home() {
     setEditingFilterValue('');
   };
 
-  // Initialize profile
+  // Initialize profile and load settings on user change
   useEffect(() => {
     if (user) {
       fetch('/api/init-profile', { method: 'POST' })
@@ -144,18 +167,20 @@ export default function Home() {
     }
   }, [user, loadSettings]);
 
-  // Get sources for analysis
+  // Get sources for analysis (Prioritizes current input, then history)
   const getSourcesForAnalysis = (): string => {
     if (allowedSources.trim()) {
-      return allowedSources;
+      return allowedSources.trim(); // Use current input if available
     }
+    // Use the filter from the history (e.g., the most recent one or all joined)
     if (filterHistory.length > 0) {
-      return filterHistory[0].filters;
+      // Assuming 'filters' property holds the source string
+      return filterHistory[0].filters || ''; 
     }
     return '';
   };
 
-  // Main analysis workflow
+  // --- Main analysis workflow ---
   const handleAnalyze = async () => {
     const sourcesToUse = getSourcesForAnalysis();
 
@@ -201,8 +226,11 @@ export default function Home() {
         setLoading(false);
         return;
       }
-
-      setClassifiedItems(analyzedData.classifiedItems || []);
+      
+      // Assuming analyzedData has a structured format for display
+      // Note: classifiedItems is not in the standard Gemini JSON schema, 
+      // check that your /api/analyze route returns this field.
+      setClassifiedItems(analyzedData.events || []); // Use events array for display
 
       // STEP 3: Schedule Calendar Events
       const calendarRes = await fetch('/api/calendar', {
@@ -211,7 +239,6 @@ export default function Home() {
         body: JSON.stringify({
           events: analyzedData.events,
           summary: analyzedData.summary,
-          classifiedItems: analyzedData.classifiedItems,
         }),
       });
       const calendarData = await calendarRes.json();
@@ -235,6 +262,7 @@ export default function Home() {
   };
 
   if (!user) {
+    // --- SIGN-IN UI ---
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 p-4">
         <h1 className="text-3xl font-bold mb-4 text-blue-700">Parent Buddy</h1>
@@ -246,7 +274,8 @@ export default function Home() {
             supabase.auth.signInWithOAuth({
               provider: 'google',
               options: {
-                redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/` : 'https://www.myros.ai/',
+                // CRITICAL FIX: Direct the redirect to the callback route to process the session
+                redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : 'https://www.myros.ai/auth/callback',
                 scopes: 'email openid https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events',
               },
             })
@@ -259,6 +288,7 @@ export default function Home() {
     );
   }
 
+  // --- MAIN APP UI ---
   return (
     <main className="min-h-screen bg-gray-100 p-8 sm:p-12">
       <header className="flex justify-between items-center mb-8 pb-4 border-b border-gray-300">
@@ -303,9 +333,10 @@ export default function Home() {
             />
             <button
               onClick={handleSaveSettings}
-              disabled={saveStatus === 'saving' || allowedSources.length === 0}
+              // Disabled if saving or if the input is empty
+              disabled={saveStatus === 'saving' || !allowedSources.trim()}
               className={`px-4 py-3 rounded-lg text-white font-medium transition duration-150 ${
-                saveStatus === 'saving' || allowedSources.length === 0
+                saveStatus === 'saving' || !allowedSources.trim()
                   ? 'bg-gray-400 cursor-not-allowed'
                   : 'bg-violet-600 hover:bg-violet-700'
               }`}
@@ -324,6 +355,7 @@ export default function Home() {
           {/* Saved Filters List */}
           {filterHistory.length > 0 && (
             <div className="mb-6">
+              <h3 className="text-md font-semibold text-gray-700 mb-2">Saved Filters:</h3>
               <div className="space-y-2">
                 {filterHistory.map((filter) => (
                   <div key={filter.id} className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200 group hover:bg-gray-100 transition">
@@ -377,6 +409,7 @@ export default function Home() {
 
           <button
             onClick={handleAnalyze}
+            // Disabled if loading, or if no current filter AND no history exists
             disabled={loading || (allowedSources.length === 0 && filterHistory.length === 0)}
             className={`w-full py-3 rounded-lg text-white font-semibold transition duration-150 ${
               loading || (allowedSources.length === 0 && filterHistory.length === 0)
@@ -394,6 +427,7 @@ export default function Home() {
             2. Extracted Items & Calendar Status
           </h2>
           <div className="space-y-4 max-h-[600px] overflow-y-auto">
+            {/* ... (Your result display logic remains the same) ... */}
             {loading ? (
               <p className="text-gray-500">Processing, analyzing, and scheduling items...</p>
             ) : result ? (
@@ -403,19 +437,21 @@ export default function Home() {
                 {classifiedItems.length > 0 && (
                   <div className="space-y-4 border-t pt-6">
                     <h3 className="font-semibold text-gray-700 mb-4">📋 Classified Items:</h3>
+                    {/* NOTE: If classifiedItems is an array of event objects, the keys below 
+                       (color, group, location, etc.) must match what your Gemini API returns. */}
                     {classifiedItems.map((item, idx) => (
                       <div
                         key={idx}
                         className="border-l-4 p-4 bg-gray-50 rounded"
-                        style={{ borderColor: item.color }}
+                        style={{ borderColor: item.color || '#3b82f6' }} // Default color added
                       >
                         <div className="flex items-start justify-between mb-2">
                           <h4 className="font-semibold text-gray-800">{item.title}</h4>
                           <span
                             className="px-2 py-1 text-xs rounded text-white"
-                            style={{ backgroundColor: item.color }}
+                            style={{ backgroundColor: item.color || '#3b82f6' }}
                           >
-                            {item.group}
+                            {item.group || item.type}
                           </span>
                         </div>
 
@@ -428,6 +464,7 @@ export default function Home() {
                               {item.time && ` at ${item.time}`}
                             </div>
                           )}
+                          {/* NOTE: You may need to adapt these fields to match the Gemini JSON schema */}
                           {item.location && (
                             <div>📍 <strong>Location:</strong> {item.location}</div>
                           )}
