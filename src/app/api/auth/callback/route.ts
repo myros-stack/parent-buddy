@@ -4,16 +4,18 @@ import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 
+// The Supabase Auth flow uses a GET request to return the code.
 export async function GET(request: Request) {
-  const cookieStore = cookies()
-  const url = new URL(request.url)
-  const code = url.searchParams.get('code')
+  const requestUrl = new URL(request.url)
+  const code = requestUrl.searchParams.get('code')
   
-  // This is the URL the user will be sent to AFTER the session is established
-  // If no 'next' is provided, send them to the root page.
-  const next = url.searchParams.get('next') || '/' 
+  // This is the default page to redirect to after successful login
+  const next = requestUrl.searchParams.get('next') || '/'
 
   if (code) {
+    const cookieStore = cookies()
+
+    // 1. Create the server-side Supabase client using environment variables
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -32,18 +34,25 @@ export async function GET(request: Request) {
       }
     )
     
-    // Exchange the code for a session
+    // 2. Exchange the code for a session
     const { error } = await supabase.auth.exchangeCodeForSession(code)
 
     if (!error) {
-      // Redirect the user to the destination page (e.g., '/')
-      return NextResponse.redirect(url.origin + next)
+      // 3. Successful login: redirect the user to the destination
+      return NextResponse.redirect(requestUrl.origin + next)
+    }
+    
+    // Optional: Log the error if the exchange failed
+    if (error) {
+        console.error('Supabase exchangeCodeForSession failed:', error);
     }
   }
 
-  // Return to the home page with an error or generic message
-  return NextResponse.redirect(url.origin) 
+  // 4. Failed login or missing code: redirect to the homepage
+  // The user will see the login button again.
+  return NextResponse.redirect(requestUrl.origin) 
 }
 
-// NOTE: Add dynamic flag for good measure, as it handles server-side cookies
+// Important: Explicitly tell Next.js this is a dynamic route 
+// because it interacts with cookies and server state.
 export const dynamic = 'force-dynamic';
