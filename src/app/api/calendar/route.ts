@@ -1,12 +1,19 @@
-// src/app/api/calendar/route.ts - FIXED
+// src/app/api/calendar/route.ts (Brand New Code)
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { google } from 'googleapis'
+import { parseISO, format, isFuture, startOfDay } from 'date-fns'
+import { zonedTimeToUtc, utcToZonedTime, format as formatToTimeZone } from 'date-fns-tz'
 
+// --- Configuration Constants ---
+// Google Calendar Color ID for Teal (Sage)
+const TEAL_COLOR_ID = '4' 
+
+// --- Supabase Helper ---
 async function getSupabaseClient() {
-  const cookieStore = await cookies()
+  const cookieStore = cookies()
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -20,67 +27,37 @@ async function getSupabaseClient() {
 }
 
 /**
- * Parse time strings in multiple formats
- * Supports: 3pm, 15:00, 3:00:00, 15, 3:00pm, etc.
+ * Parses time strings in multiple formats (e.g., 3pm, 15:00, 3:00:00pm)
+ * Returns {hours, minutes, seconds} or null if invalid.
  */
 function parseTimeString(timeStr: string): { hours: number; minutes: number; seconds: number } | null {
-  if (!timeStr || timeStr === 'No time' || timeStr === 'No time provided') {
-    return null
-  }
+  if (!timeStr || timeStr.toLowerCase().includes('no time')) return null
 
   const time = timeStr.trim().toLowerCase()
 
-  // Format: HH:MM:SS (24-hour)
-  const hhmmssMatch = time.match(/^(\d{1,2}):(\d{2}):(\d{2})$/)
-  if (hhmmssMatch) {
-    const hours = parseInt(hhmmssMatch[1], 10)
-    const minutes = parseInt(hhmmssMatch[2], 10)
-    const seconds = parseInt(hhmmssMatch[3], 10)
+  // Match formats: HH:MM:SS, HH:MM, or HH
+  const fullMatch = time.match(/^(\d{1,2}):?(\d{2})?:?(\d{2})?$/)
+  if (fullMatch) {
+    let hours = parseInt(fullMatch[1], 10)
+    const minutes = fullMatch[2] ? parseInt(fullMatch[2], 10) : 0
+    const seconds = fullMatch[3] ? parseInt(fullMatch[3], 10) : 0
+    
+    // Check for am/pm suffix to adjust 12-hour clock formats
+    const isPm = time.includes('pm')
+    if (isPm && hours !== 12) hours += 12
+    else if (!isPm && hours === 12) hours = 0 // Midnight case (12am -> 0)
+
     if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 && seconds >= 0 && seconds <= 59) {
       return { hours, minutes, seconds }
     }
   }
 
-  // Format: HH:MM (24-hour)
-  const hhmmMatch = time.match(/^(\d{1,2}):(\d{2})$/)
-  if (hhmmMatch) {
-    const hours = parseInt(hhmmMatch[1], 10)
-    const minutes = parseInt(hhmmMatch[2], 10)
-    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-      return { hours, minutes, seconds: 0 }
-    }
-  }
-
-  // Format: HH (24-hour, just hour)
-  const hhMatch = time.match(/^(\d{1,2})$/)
-  if (hhMatch) {
-    const hours = parseInt(hhMatch[1], 10)
-    if (hours >= 0 && hours <= 23) {
-      return { hours, minutes: 0, seconds: 0 }
-    }
-  }
-
-  // Format: H:MMam/pm or HH:MMam/pm
-  const ampmMatch = time.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/)
+  // Final check for 12-hour formats like "3pm"
+  const ampmMatch = time.match(/^(\d{1,2})(am|pm)$/)
   if (ampmMatch) {
     let hours = parseInt(ampmMatch[1], 10)
-    const minutes = parseInt(ampmMatch[2], 10)
-    const isPm = ampmMatch[3] === 'pm'
-
-    if (isPm && hours !== 12) hours += 12
-    else if (!isPm && hours === 12) hours = 0
-
-    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-      return { hours, minutes, seconds: 0 }
-    }
-  }
-
-  // Format: Ham/pm or HPMam/pm (just hour with am/pm)
-  const hampmMatch = time.match(/^(\d{1,2})\s*(am|pm)$/)
-  if (hampmMatch) {
-    let hours = parseInt(hampmMatch[1], 10)
-    const isPm = hampmMatch[2] === 'pm'
-
+    const isPm = ampmMatch[2] === 'pm'
+    
     if (isPm && hours !== 12) hours += 12
     else if (!isPm && hours === 12) hours = 0
 
@@ -92,31 +69,9 @@ function parseTimeString(timeStr: string): { hours: number; minutes: number; sec
   return null
 }
 
-/**
- * Get user's local timezone
- */
-function getLocalTimezone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone
-}
-
-/**
- * Map event category to Google Calendar colorId
- */
-function getCategoryColorId(category: string): string {
-  const categoryToColorId: { [key: string]: string } = {
-    'Events': '1',              // Red
-    'Deadlines': '3',           // Orange
-    'Schedule changes': '7',    // Blue
-    'Student updates': '5',     // Green
-    'General info': '11',       // Gray
-  }
-
-  return categoryToColorId[category] || '11'
-}
-
 export async function POST(request: Request) {
   try {
-    const { events } = await request.json()
+    const { events, userTimeZone } = await request.json()
 
     if (!events || events.length === 0) {
       return NextResponse.json({
@@ -124,61 +79,41 @@ export async function POST(request: Request) {
         message: 'No events to schedule.',
       })
     }
-
+    
+    // --- 1. Authentication Check ---
     const supabase = await getSupabaseClient()
     const { data: { session } } = await supabase.auth.getSession()
 
     if (!session?.provider_token) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+      return NextResponse.json({ error: 'Not authenticated with Google' }, { status: 401 })
     }
 
     const auth = new google.auth.OAuth2()
     auth.setCredentials({ access_token: session.provider_token })
     const calendar = google.calendar({ version: 'v3', auth })
 
-    // Get local timezone
-    const localTimezone = getLocalTimezone()
-    console.log(`\n📅 Using timezone: ${localTimezone}`)
-
-    // Get today's date at start of day
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    console.log(`📋 Today: ${today.toISOString().split('T')[0]}`)
-    console.log(`Processing ${events.length} event(s)...`)
-
+    // --- 2. Processing Logic ---
+    const nowInUserTZ = utcToZonedTime(new Date(), userTimeZone || 'UTC')
+    const todayInUserTZ = startOfDay(nowInUserTZ)
+    
     let scheduledCount = 0
     let skippedCount = 0
 
     for (const event of events) {
       try {
-        // Validate event has required fields
         if (!event.date || !event.title) {
-          console.log(`⏭️ Skipping: missing date or title`)
           skippedCount++
           continue
         }
 
-        // Parse date string (format: YYYY-MM-DD)
-        const dateParts = event.date.split('-')
-        if (dateParts.length !== 3) {
-          console.log(`⏭️ Skipping "${event.title}": invalid date format`)
-          skippedCount++
-          continue
-        }
-
-        const year = parseInt(dateParts[0], 10)
-        const month = parseInt(dateParts[1], 10)
-        const day = parseInt(dateParts[2], 10)
-
-        // Create date object
-        const eventDate = new Date(year, month - 1, day)
-        eventDate.setHours(0, 0, 0, 0)
-
-        console.log(`\n📌 Event: "${event.title}" on ${event.date}`)
-
-        // Skip past events
-        if (eventDate.getTime() < today.getTime()) {
-          console.log(`   ⏭️ Skipping: past event`)
+        // Parse date (which should be YYYY-MM-DD from analysis)
+        const parsedDate = parseISO(event.date)
+        const eventStartDay = startOfDay(parsedDate)
+        
+        // --- Schedule Future Events (Including Today) ---
+        // Compare date only (start of day) to avoid skipping today's events that already passed.
+        // If event date is before today (in the user's timezone), skip it.
+        if (eventStartDay.getTime() < todayInUserTZ.getTime()) {
           skippedCount++
           continue
         }
@@ -186,74 +121,68 @@ export async function POST(request: Request) {
         const calendarEvent: any = {
           summary: event.title,
           description: event.description || '',
+          colorId: TEAL_COLOR_ID, // Force Teal color
         }
 
         if (event.location) {
           calendarEvent.location = event.location
         }
+        
+        const parsedTime = parseTimeString(event.time)
+        const hasValidTime = !!parsedTime
+        
+        // --- Time-Aware Scheduling ---
+        if (hasValidTime) {
+          // Combine date (YYYY-MM-DD) and time (HH:MM:SS) into a single date object
+          const startDateTimeLocal = new Date(
+            parsedDate.getFullYear(), 
+            parsedDate.getMonth(), 
+            parsedDate.getDate(), 
+            parsedTime!.hours, 
+            parsedTime!.minutes, 
+            parsedTime!.seconds
+          );
+          
+          // CRITICAL: Convert the floating local time to a UTC time string
+          // but specify the timeZone property for Google Calendar to display it correctly.
+          const startInUserTZ = formatToTimeZone(startDateTimeLocal, userTimeZone, "yyyy-MM-dd'T'HH:mm:ss");
+          const endDateTime = new Date(startDateTimeLocal.getTime() + 60 * 60 * 1000) // Default 1 hour duration
+          const endInUserTZ = formatToTimeZone(endDateTime, userTimeZone, "yyyy-MM-dd'T'HH:mm:ss");
 
-        // Handle time
-        let hasValidTime = false
-        if (event.time && event.time !== 'No time' && event.time !== 'No time provided') {
-          const parsedTime = parseTimeString(event.time)
-          if (parsedTime) {
-            hasValidTime = true
-            // Create timed event
-            const startDateTime = new Date(year, month - 1, day, parsedTime.hours, parsedTime.minutes, parsedTime.seconds)
-            const endDateTime = new Date(year, month - 1, day, parsedTime.hours + 1, parsedTime.minutes, parsedTime.seconds)
-
-            calendarEvent.start = {
-              dateTime: startDateTime.toISOString(),
-              timeZone: localTimezone,
-            }
-            calendarEvent.end = {
-              dateTime: endDateTime.toISOString(),
-              timeZone: localTimezone,
-            }
-            console.log(`   ⏰ Timed: ${parsedTime.hours}:${String(parsedTime.minutes).padStart(2, '0')}`)
-          }
-        }
-
-        // If no valid time, make it all-day
-        if (!hasValidTime) {
-          const endDate = new Date(year, month - 1, day + 1)
           calendarEvent.start = {
-            date: event.date,
+            dateTime: startInUserTZ,
+            timeZone: userTimeZone,
           }
           calendarEvent.end = {
-            date: endDate.toISOString().split('T')[0],
+            dateTime: endInUserTZ,
+            timeZone: userTimeZone,
           }
-          console.log(`   📅 All-day`)
+
+        } else {
+          // All-day event
+          const endDate = new Date(eventStartDay)
+          endDate.setDate(eventStartDay.getDate() + 1)
+          
+          calendarEvent.start = {
+            date: format(eventStartDay, 'yyyy-MM-dd'),
+          }
+          calendarEvent.end = {
+            date: format(endDate, 'yyyy-MM-dd'),
+          }
         }
 
-        // Add color
-        const colorId = getCategoryColorId(event.category)
-        calendarEvent.colorId = colorId
-        console.log(`   🎨 Color ID: ${colorId}`)
-
-        calendarEvent.reminders = {
-          useDefault: false,
-          overrides: [
-            { method: 'notification', minutes: 24 * 60 },
-            { method: 'notification', minutes: 60 },
-          ],
-        }
-
-        // Insert event
+        // --- Insert Event ---
         await calendar.events.insert({
           calendarId: 'primary',
           requestBody: calendarEvent,
         })
 
-        console.log(`   ✓ Scheduled`)
         scheduledCount++
       } catch (error) {
-        console.error(`   ✗ Error:`, error)
+        console.error(`Error processing event ${event.title}:`, error)
         skippedCount++
       }
     }
-
-    console.log(`\n✅ Complete: ${scheduledCount} scheduled, ${skippedCount} skipped\n`)
 
     return NextResponse.json({
       scheduledCount,
@@ -261,10 +190,10 @@ export async function POST(request: Request) {
       message:
         scheduledCount > 0
           ? `Successfully scheduled ${scheduledCount} event(s)`
-          : 'No valid events to schedule.',
+          : 'No valid events were found to schedule for today or the future.',
     })
   } catch (error) {
-    console.error('Error in POST /api/calendar:', error)
+    console.error('Fatal Error in POST /api/calendar:', error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to schedule events' },
       { status: 500 }
