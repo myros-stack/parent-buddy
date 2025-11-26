@@ -274,8 +274,6 @@ export default function Home() {
             supabase.auth.signInWithOAuth({
               provider: 'google',
               options: {
-                // CRITICAL FIX: Direct the redirect to the callback route to process the session
-                redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : 'https://www.myros.ai/auth/callback',
                 scopes: 'email openid https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events',
               },
             })
@@ -333,7 +331,6 @@ export default function Home() {
             />
             <button
               onClick={handleSaveSettings}
-              // Disabled if saving or if the input is empty
               disabled={saveStatus === 'saving' || !allowedSources.trim()}
               className={`px-4 py-3 rounded-lg text-white font-medium transition duration-150 ${
                 saveStatus === 'saving' || !allowedSources.trim()
@@ -409,7 +406,6 @@ export default function Home() {
 
           <button
             onClick={handleAnalyze}
-            // Disabled if loading, or if no current filter AND no history exists
             disabled={loading || (allowedSources.length === 0 && filterHistory.length === 0)}
             className={`w-full py-3 rounded-lg text-white font-semibold transition duration-150 ${
               loading || (allowedSources.length === 0 && filterHistory.length === 0)
@@ -427,7 +423,6 @@ export default function Home() {
             2. Extracted Items & Calendar Status
           </h2>
           <div className="space-y-4 max-h-[600px] overflow-y-auto">
-            {/* ... (Your result display logic remains the same) ... */}
             {loading ? (
               <p className="text-gray-500">Processing, analyzing, and scheduling items...</p>
             ) : result ? (
@@ -437,13 +432,11 @@ export default function Home() {
                 {classifiedItems.length > 0 && (
                   <div className="space-y-4 border-t pt-6">
                     <h3 className="font-semibold text-gray-700 mb-4">📋 Classified Items:</h3>
-                    {/* NOTE: If classifiedItems is an array of event objects, the keys below 
-                       (color, group, location, etc.) must match what your Gemini API returns. */}
                     {classifiedItems.map((item, idx) => (
                       <div
                         key={idx}
                         className="border-l-4 p-4 bg-gray-50 rounded"
-                        style={{ borderColor: item.color || '#3b82f6' }} // Default color added
+                        style={{ borderColor: item.color || '#3b82f6' }}
                       >
                         <div className="flex items-start justify-between mb-2">
                           <h4 className="font-semibold text-gray-800">{item.title}</h4>
@@ -464,7 +457,6 @@ export default function Home() {
                               {item.time && ` at ${item.time}`}
                             </div>
                           )}
-                          {/* NOTE: You may need to adapt these fields to match the Gemini JSON schema */}
                           {item.location && (
                             <div>📍 <strong>Location:</strong> {item.location}</div>
                           )}
