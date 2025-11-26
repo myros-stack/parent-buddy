@@ -1,11 +1,11 @@
-// src/app/api/calendar/route.ts (Brand New Code)
+// src/app/api/calendar/route.ts
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { google } from 'googleapis'
-import { parseISO, format, isFuture, startOfDay } from 'date-fns'
-import { zonedTimeToUtc, utcToZonedTime, format as formatToTimeZone } from 'date-fns-tz'
+import { parseISO, format, startOfDay } from 'date-fns'
+import { utcToZonedTime, format as formatToTimeZone } from 'date-fns-tz'
 
 // --- Configuration Constants ---
 // Google Calendar Color ID for Teal (Sage)
@@ -93,8 +93,9 @@ export async function POST(request: Request) {
     const calendar = google.calendar({ version: 'v3', auth })
 
     // --- 2. Processing Logic ---
+    // CRITICAL FIX: Define the comparison boundary accurately in the user's timezone.
     const nowInUserTZ = utcToZonedTime(new Date(), userTimeZone || 'UTC')
-    const todayInUserTZ = startOfDay(nowInUserTZ)
+    const todayInUserTZStart = startOfDay(nowInUserTZ)
     
     let scheduledCount = 0
     let skippedCount = 0
@@ -106,16 +107,16 @@ export async function POST(request: Request) {
           continue
         }
 
-        // Parse date (which should be YYYY-MM-DD from analysis)
-        const parsedDate = parseISO(event.date)
-        const eventStartDay = startOfDay(parsedDate)
+        // Parse date (e.g., '2025-11-26')
+        const parsedEventDate = parseISO(event.date)
+        const eventStartDay = startOfDay(parsedEventDate) 
         
         // --- Schedule Future Events (Including Today) ---
-        // Compare date only (start of day) to avoid skipping today's events that already passed.
-        // If event date is before today (in the user's timezone), skip it.
-        if (eventStartDay.getTime() < todayInUserTZ.getTime()) {
-          skippedCount++
-          continue
+        // FIX IMPLEMENTED HERE: Compare the event's start-of-day against the user's start-of-day.
+        if (eventStartDay.getTime() < todayInUserTZStart.getTime()) {
+            // console.log(`   ⏭️ Skipping: Past event. Event day: ${format(eventStartDay, 'yyyy-MM-dd')}, Today's start: ${format(todayInUserTZStart, 'yyyy-MM-dd')}`);
+            skippedCount++;
+            continue;
         }
 
         const calendarEvent: any = {
@@ -135,16 +136,15 @@ export async function POST(request: Request) {
         if (hasValidTime) {
           // Combine date (YYYY-MM-DD) and time (HH:MM:SS) into a single date object
           const startDateTimeLocal = new Date(
-            parsedDate.getFullYear(), 
-            parsedDate.getMonth(), 
-            parsedDate.getDate(), 
+            parsedEventDate.getFullYear(), 
+            parsedEventDate.getMonth(), 
+            parsedEventDate.getDate(), 
             parsedTime!.hours, 
             parsedTime!.minutes, 
             parsedTime!.seconds
           );
           
-          // CRITICAL: Convert the floating local time to a UTC time string
-          // but specify the timeZone property for Google Calendar to display it correctly.
+          // Convert the floating local time to a UTC time string
           const startInUserTZ = formatToTimeZone(startDateTimeLocal, userTimeZone, "yyyy-MM-dd'T'HH:mm:ss");
           const endDateTime = new Date(startDateTimeLocal.getTime() + 60 * 60 * 1000) // Default 1 hour duration
           const endInUserTZ = formatToTimeZone(endDateTime, userTimeZone, "yyyy-MM-dd'T'HH:mm:ss");
